@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "io.github.frederiksuess.gyst.twa",
+        "sha256_cert_fingerprints": ["61:77:12:10:77:37:F0:27:C1:96:E6:D7:F2:D0:57:87:E6:28:C6:8C:8F:61:A5:16:0A:78:78:BC:7C:BA:78:86"]
+      }
+    }]
