@@ -90,7 +90,9 @@ svg.i.s{width:16px;height:16px}
 .check.on span svg{stroke:var(--paper);width:12px;height:12px}
 .check span svg{display:none}
 .check.on span svg{display:block}
-.check.dim span{border-style:dashed;border-color:var(--ink-3)}
+.check.dim span,.check:disabled span{border-style:dashed;border-color:var(--ink-3)}
+.check:disabled{cursor:default}
+input[type=datetime-local]{padding:8px 0;min-width:0}
 .handle{width:28px;height:36px;flex:none;display:inline-flex;align-items:center;justify-content:center;color:var(--ink-3);touch-action:none;cursor:grab;margin-right:-6px}
 .row.dragging{opacity:.4}
 .row.drop-before::before,.row.drop-after::after{content:"";position:absolute;left:0;right:0;height:2px;background:var(--ink)}
@@ -220,7 +222,7 @@ svg.i.s{width:16px;height:16px}
 <script>
 /* ========== store ========== */
 const KEY='gyst:v1';
-const blank=()=>({notes:[],tasks:[],habits:[],journal:{},settings:{pin:null,bio:null}});
+const blank=()=>({notes:[],tasks:[],habits:[],journal:{},mit:{},settings:{pin:null,bio:null}});
 let S=blank();
 const norm=d=>{const x=Object.assign(blank(),d||{});x.settings=Object.assign({pin:null,bio:null},x.settings||{});return x;};
 function idb(){return new Promise((res,rej)=>{const r=indexedDB.open('gyst',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
@@ -233,7 +235,8 @@ async function loadState(){
 }
 let saveT=null;
 function save(){clearTimeout(saveT);saveT=setTimeout(()=>{const raw=JSON.stringify(S);
-  idbSet('state',raw).catch(()=>{try{localStorage.setItem(KEY,raw);}catch(e){toast('Could not save — storage full or blocked');}});},120);}
+  idbSet('state',raw).catch(()=>{try{localStorage.setItem(KEY,raw);}catch(e){toast('Could not save — storage full or blocked');}});
+  if(typeof scheduleReminders==='function')scheduleReminders();},120);}
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const pad=n=>String(n).padStart(2,'0');
 const dkey=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
@@ -286,13 +289,22 @@ function taskDue(t,k){k=k||today();const r=t.repeat;if(!r)return true;
   if(r.type==='interval')return k>=(t.nextDue||t.created);
   return true;}
 function taskDoneOn(t,k){k=k||today();return t.repeat?t.completedOn===k:!!t.done;}
-function toggleTask(t){const k=today();
+function toggleTask(t,k){k=k||today();
   if(!t.repeat){t.done=!t.done;t.doneAt=t.done?k:null;}
   else if(t.completedOn===k){t.completedOn=null;if(t.repeat.type==='interval')t.nextDue=k;}
   else{t.completedOn=k;if(t.repeat.type==='interval')t.nextDue=addDays(k,t.repeat.n);}
   save();}
 function repeatLabel(r){if(!r)return 'Never';if(r.type==='daily')return 'Every day';if(r.type==='interval')return r.n===1?'Every day':`Every ${r.n} days`;
   if(r.type==='weekdays'){if(r.days.length===7)return 'Every day';if(!r.days.length)return 'No days';return [1,2,3,4,5,6,0].filter(d=>r.days.includes(d)).map(d=>DOWS[(d+6)%7]).join(' ');}return '';}
+// focus (most important tasks) per day, max three
+function mitFor(k){return ((S.mit&&S.mit[k])||[]).filter(id=>task(id));}
+function mitTasks(k){return mitFor(k).map(task);}
+function setMit(k,ids){if(!S.mit)S.mit={};ids=ids.slice(0,3);if(ids.length)S.mit[k]=ids;else delete S.mit[k];save();}
+function mitDateOf(id){const t=today();return Object.keys(S.mit||{}).filter(k=>k>=t).sort().find(k=>S.mit[k].includes(id))||null;}
+function unsetMit(id){Object.keys(S.mit||{}).forEach(k=>{if(k>=today()&&S.mit[k].includes(id))setMit(k,S.mit[k].filter(x=>x!==id));});}
+const relDay=k=>{const t=today();return k===t?'Today':k===addDays(t,1)?'Tomorrow':k===addDays(t,-1)?'Yesterday':'';};
+const shortDate=k=>{const d=parseKey(k);return `${d.getDate()} ${MON[d.getMonth()].slice(0,3)}`;};
+function fmtRem(iso,k){const d=new Date(iso);if(isNaN(d))return '';const hm=`${pad(d.getHours())}:${pad(d.getMinutes())}`;return dkey(d)===(k||today())?hm:`${shortDate(dkey(d))} ${hm}`;}
 const allTags=()=>[...new Set(S.tasks.map(t=>t.tag).filter(Boolean))].sort();
 
 // habits
@@ -300,7 +312,7 @@ function habitToday(h,k){k=k||today();const s=h.schedule;if(s.type==='daily')ret
 function weekCount(h,k){k=k||today();const ws=weekStart(k),we=addDays(ws,6);return h.checks.filter(c=>c>=ws&&c<=we).length;}
 function habitChecked(h,k){k=k||today();return h.checks.includes(k);}
 function habitDoneForWeek(h,k){return h.schedule.type==='perWeek'&&weekCount(h,k)>=h.schedule.n;}
-function toggleHabit(h){const k=today();if(habitChecked(h,k))h.checks=h.checks.filter(c=>c!==k);else h.checks.push(k);save();}
+function toggleHabit(h,k){k=k||today();if(habitChecked(h,k))h.checks=h.checks.filter(c=>c!==k);else h.checks.push(k);save();}
 function scheduleLabel(s){if(s.type==='daily')return 'Every day';if(s.type==='perWeek')return `${s.n}× a week`;return repeatLabel({type:'weekdays',days:s.days});}
 
 // journal
@@ -446,27 +458,38 @@ function topbar(left,right){return `<div class="top"><div class="left">${left}</
 const backCrumb=(href,label)=>`<a class="crumb" href="${href}">${I.back}<span>${esc(label)}</span></a>`;
 const checkBtn=(on,attr)=>`<button class="check${on?' on':''}" ${attr||''} aria-pressed="${on}"><span>${I.tick}</span></button>`;
 
-// ---- Today
-function vToday(){const k=today();const d=parseKey(k);
+// ---- Today (browsable by day)
+function vToday(k){const t=today();k=k||t;if(!/^\d{4}-\d{2}-\d{2}$/.test(k)){location.hash='#/today';return;}
+  const d=parseKey(k),future=k>t,rel=relDay(k);
   const habits=S.habits.filter(h=>habitToday(h,k)&&!(habitDoneForWeek(h,k)&&!habitChecked(h,k))).sort((a,b)=>a.order-b.order);
-  const tasks=S.tasks.filter(t=>taskDue(t,k)&&!taskDoneOn(t,k)).sort((a,b)=>a.order-b.order);
-  const j=jget(k);
-  page().innerHTML=topbar(`<span class="wordmark">GYST</span>`,`<button class="icon-btn" aria-label="Settings" data-settings>${I.gear}</button>`)+
-  `<div class="today-date"><span class="dow">${DOW[d.getDay()]}</span><h1>${d.getDate()} ${MON[d.getMonth()]}</h1></div>
+  const mits=mitTasks(k);const j=jget(k);
+  page().innerHTML=topbar(`<span class="wordmark">GYST</span>`,`<a class="icon-btn" href="#/today/${addDays(k,-1)}" aria-label="Previous day">${I.left}</a><a class="icon-btn" href="#/today/${addDays(k,1)}" aria-label="Next day">${I.right}</a><button class="icon-btn" aria-label="Settings" data-settings>${I.gear}</button>`)+
+  `<a class="today-date" href="#/today" style="display:block;text-decoration:none"><span class="dow">${DOW[d.getDay()]}${rel?' · '+rel:''}</span><h1>${d.getDate()} ${MON[d.getMonth()]}${d.getFullYear()!==new Date().getFullYear()?' '+d.getFullYear():''}</h1></a>
    <div class="sec"><div class="sec-h"><span>Habits</span><a href="#/habits">All</a></div>
-     ${habits.length?habits.map(h=>habitRow(h,k,false)).join(''):`<div class="empty">Nothing scheduled today.</div>`}</div>
-   <div class="sec"><div class="sec-h"><span>Tasks</span><a href="#/tasks">All</a></div>
-     ${tasks.length?tasks.map(t=>taskRow(t,k,false)).join(''):`<div class="empty">Nothing open.</div>`}</div>
+     ${habits.length?habits.map(h=>habitRow(h,k,false,future)).join(''):`<div class="empty">Nothing scheduled.</div>`}</div>
+   <div class="sec"><div class="sec-h"><span>Focus</span>${k>=t?`<button data-pick>${mits.length?'Change':'Choose'}</button>`:''}</div>
+     ${mits.length?mits.map(x=>taskRow(x,k,false,future)).join(''):`<div class="empty">${k>=t?'Pick up to three tasks that matter most this day.':'No focus was set.'}</div>`}</div>
    <div class="sec"><div class="sec-h"><span>Journal</span><a href="#/journal">All</a></div>
-     <a class="journal-preview${j?'':' empty-j'}" href="#/journal/${k}">${j?j.body.split('\n').map(l=>inline(lineKind(l).text)).join('\n'):"Write today's entry"}</a></div>`;
-  wireRows(page(),k);page().querySelector('[data-settings]').onclick=settingsSheet;}
+     ${future?`<div class="empty">Not yet.</div>`:`<a class="journal-preview${j?'':' empty-j'}" href="#/journal/${k}">${j?j.body.split('\n').map(l=>inline(lineKind(l).text)).join('\n'):(k===t?"Write today's entry":'No entry')}</a>`}</div>`;
+  wireRows(page(),k);page().querySelector('[data-settings]').onclick=settingsSheet;
+  const pk=page().querySelector('[data-pick]');if(pk)pk.onclick=()=>mitSheet(k);}
 
-function habitRow(h,k,handle){const on=habitChecked(h,k);const wk=h.schedule.type==='perWeek'?`<span class="sub">${weekCount(h,k)} of ${h.schedule.n}</span>`:'';
-  return `<div class="row" data-id="${h.id}" data-kind="habit">${checkBtn(on)}<a class="body${on?' done':''}" href="#/habits/${h.id}"><span class="title">${esc(h.name)}</span>${wk}</a>${handle?`<span class="handle">${I.grip}</span>`:''}</div>`;}
-function taskRow(t,k,handle){const on=taskDoneOn(t,k);
-  return `<div class="row" data-id="${t.id}" data-kind="task">${checkBtn(on)}<a class="body${on?' done':''}" href="#/tasks/${t.id}"><span class="title">${esc(t.title||'Untitled')}</span>${t.tag?`<span class="pill">${esc(t.tag)}</span>`:''}</a>${handle?`<span class="handle">${I.grip}</span>`:''}</div>`;}
-function wireRows(root,k){root.querySelectorAll('.row .check').forEach(b=>b.onclick=()=>{const r=b.closest('.row');const id=r.dataset.id;
-  if(r.dataset.kind==='habit'){toggleHabit(habit(id));}else{toggleTask(task(id));}
+function mitSheet(k){let sel=mitFor(k).slice();
+  const draw=()=>{const cands=S.tasks.filter(x=>!taskDoneOn(x,k)&&(!x.repeat||taskDue(x,k))).sort((a,b)=>a.order-b.order);
+    sheet(`<h3>Focus · ${relDay(k)||shortDate(k)}</h3><p class="small muted" style="margin:-6px 0 10px">${sel.length} of 3 chosen</p>
+      <div class="opt" style="max-height:50vh;overflow:auto">${cands.map(x=>`<button data-id="${x.id}" class="${sel.includes(x.id)?'on':''}"><span style="flex:1;text-align:left">${esc(x.title)}</span>${x.tag?`<span class="pill" style="margin-right:12px">${esc(x.tag)}</span>`:''}</button>`).join('')}</div>
+      ${cands.length?'':'<div class="empty">No open tasks. Add some under Tasks first.</div>'}
+      <div class="menu" style="margin-top:8px"><button data-ok>Done</button></div>`,s=>{
+      s.querySelectorAll('[data-id]').forEach(b=>b.onclick=()=>{const id=b.dataset.id;if(sel.includes(id))sel=sel.filter(x=>x!==id);else if(sel.length>=3){toast('Three is the limit — that is the point.');return;}else sel.push(id);draw();});
+      s.querySelector('[data-ok]').onclick=()=>{closeSheet();setMit(k,sel);render();};});};
+  draw();}
+
+function habitRow(h,k,handle,future){const on=habitChecked(h,k);const wk=h.schedule.type==='perWeek'?`<span class="sub">${weekCount(h,k)} of ${h.schedule.n}</span>`:'';
+  return `<div class="row" data-id="${h.id}" data-kind="habit">${checkBtn(on,future?'disabled':'')}<a class="body${on?' done':''}" href="#/habits/${h.id}"><span class="title">${esc(h.name)}</span>${wk}</a>${handle?`<span class="handle">${I.grip}</span>`:''}</div>`;}
+function taskRow(t,k,handle,future){const on=taskDoneOn(t,k);const rem=t.reminder&&!on?`<span class="sub">${fmtRem(t.reminder,k)}</span>`:'';
+  return `<div class="row" data-id="${t.id}" data-kind="task">${checkBtn(on,future?'disabled':'')}<a class="body${on?' done':''}" href="#/tasks/${t.id}"><span class="title">${esc(t.title||'Untitled')}</span>${rem}${t.tag?`<span class="pill">${esc(t.tag)}</span>`:''}</a>${handle?`<span class="handle">${I.grip}</span>`:''}</div>`;}
+function wireRows(root,k){root.querySelectorAll('.row .check').forEach(b=>b.onclick=()=>{if(k>today()){toast('That day has not come yet');return;}const r=b.closest('.row');const id=r.dataset.id;
+  if(r.dataset.kind==='habit'){toggleHabit(habit(id),k);}else{toggleTask(task(id),k);}
   const on=r.dataset.kind==='habit'?habitChecked(habit(id),k):taskDoneOn(task(id),k);b.classList.toggle('on',on);r.querySelector('.body').classList.toggle('done',on);
   clearTimeout(r._t);r._t=setTimeout(render,650);});}
 
@@ -507,13 +530,24 @@ function vTask(id){const t=task(id);if(!t){location.hash='#/tasks';return;}const
   `<div style="display:flex;align-items:flex-start;gap:6px;margin-top:6px">${checkBtn(taskDoneOn(t,k),'style="margin-top:8px"')}<input class="title-in h2" data-title placeholder="Untitled" value="${esc(t.title)}" style="margin:6px 0 10px" autocapitalize="sentences"></div>
    <div class="field"><span class="lab">Tag</span><div class="val"><input data-tag placeholder="None" value="${esc(t.tag||'')}" list="tags"><datalist id="tags">${allTags().map(x=>`<option value="${esc(x)}">`).join('')}</datalist></div></div>
    <div class="field"><span class="lab">Repeat</span><button class="val" data-repeat style="justify-content:space-between;min-height:40px"><span>${repeatLabel(t.repeat)}</span>${I.chev}</button></div>
+   <div class="field"><span class="lab">Focus</span><button class="val" data-focus style="justify-content:space-between;min-height:40px"><span>${(()=>{const f=mitDateOf(id);return f?(relDay(f)||fmtLong(f)):'None';})()}</span>${I.chev}</button></div>
+   <div class="field"><span class="lab">Reminder</span><div class="val" style="flex-wrap:nowrap"><input type="datetime-local" data-rem value="${esc(t.reminder||'')}" aria-label="Reminder">${t.reminder?`<button class="icon-btn" data-remx aria-label="Clear reminder" style="flex:none">×</button>`:''}</div></div>
+   ${t.reminder&&isAndroid?`<a class="danger" style="display:block" href="${calIntent(t)}">Add to phone calendar for a guaranteed alert</a>`:''}
    <div class="sec"><div class="sec-h"><span>Description</span></div><div class="editor" data-editor style="min-height:20vh"></div></div>`+backlinksHTML({kind:'task',id:t.id});
   page().querySelector('.check').onclick=e=>{toggleTask(t);e.currentTarget.classList.toggle('on',taskDoneOn(t,k));};
   const ti=page().querySelector('[data-title]');ti.oninput=()=>{t.title=ti.value;save();};
   const tg=page().querySelector('[data-tag]');tg.onchange=tg.oninput=()=>{t.tag=tg.value.trim()||null;save();};
   mountEditor(page().querySelector('[data-editor]'),t.description||'',v=>{t.description=v;save();});
+  page().querySelector('[data-focus]').onclick=()=>focusSheet(id);
+  const rem=page().querySelector('[data-rem]');rem.onchange=async()=>{t.reminder=rem.value||null;save();if(t.reminder){const ok=await notifPermission();if(!ok)toast('Notifications are off — use the calendar link below');}render();};
+  const rx=page().querySelector('[data-remx]');if(rx)rx.onclick=()=>{t.reminder=null;save();render();};
   page().querySelector('[data-repeat]').onclick=()=>repeatSheet(t.repeat,r=>{t.repeat=r;if(r&&r.type==='interval'&&!t.nextDue)t.nextDue=k;if(!r){t.done=false;}save();render();});
-  page().querySelector('[data-more]').onclick=()=>menuSheet([{label:'Delete task',warn:true,fn:()=>{S.tasks=S.tasks.filter(x=>x.id!==id);save();location.hash='#/tasks';}}]);}
+  page().querySelector('[data-more]').onclick=()=>menuSheet([{label:'Delete task',warn:true,fn:()=>{unsetMit(id);S.tasks=S.tasks.filter(x=>x.id!==id);save();location.hash='#/tasks';}}]);}
+
+function focusSheet(id){const cur=mitDateOf(id);const t=today(),tm=addDays(t,1);
+  const opts=[['','None'],[t,'Today'],[tm,'Tomorrow']];if(cur&&cur!==t&&cur!==tm)opts.push([cur,fmtLong(cur)]);
+  sheet(`<h3>Focus</h3><div class="opt">${opts.map(o=>`<button data-k="${o[0]}" class="${(cur||'')===o[0]?'on':''}">${o[1]}</button>`).join('')}</div>`,s=>{
+    s.querySelectorAll('[data-k]').forEach(b=>b.onclick=()=>{const k=b.dataset.k;if(k){const ids=mitFor(k).filter(x=>x!==id);if(ids.length>=3){toast('That day already has three');return;}unsetMit(id);setMit(k,[...ids,id]);}else unsetMit(id);closeSheet();render();});});}
 
 function repeatSheet(cur,done){let r=cur?JSON.parse(JSON.stringify(cur)):null;
   const draw=()=>{const type=r?r.type:'none';
@@ -595,6 +629,7 @@ function settingsSheet(){const canBio=bioSupported;
   <button data-lock>${S.settings.pin?'Change PIN':'Set a PIN'}</button>
   ${S.settings.pin&&canBio?`<button data-bio>${S.settings.bio?'Turn off fingerprint unlock':'Unlock with fingerprint or face'}</button>`:''}
   ${S.settings.pin?'<button data-unlock class="warn">Remove PIN</button>':''}
+  ${('Notification' in window)&&Notification.permission!=='granted'?`<button data-notif>${Notification.permission==='denied'?'Notifications blocked — allow them in Android settings':'Allow reminder notifications'}</button>`:''}
   <button data-export>Export backup</button>
   <button data-import>Import backup</button>
   <input type="file" accept="application/json,.json" data-file class="hidden"></div>
@@ -603,10 +638,29 @@ function settingsSheet(){const canBio=bioSupported;
   const u=s.querySelector('[data-unlock]');if(u)u.onclick=()=>{closeSheet();S.settings.pin=null;S.settings.bio=null;save();toast('PIN removed');};
   const bb=s.querySelector('[data-bio]');if(bb)bb.onclick=async()=>{closeSheet();if(S.settings.bio){S.settings.bio=null;save();toast('Fingerprint unlock off');return;}
     try{await bioEnroll();save();toast('Fingerprint unlock on');}catch(e){toast('Could not set up fingerprint unlock');}};
+  const nb=s.querySelector('[data-notif]');if(nb)nb.onclick=async()=>{closeSheet();if(Notification.permission==='denied')return;const ok=await notifPermission();toast(ok?'Reminders will show as notifications':'Notifications stay off');};
   s.querySelector('[data-export]').onclick=()=>{closeSheet();exportBackup();};
   const f=s.querySelector('[data-file]');s.querySelector('[data-import]').onclick=()=>f.click();
   f.onchange=()=>{const file=f.files[0];if(!file)return;const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);if(!d||!Array.isArray(d.notes)||!Array.isArray(d.tasks))throw 0;closeSheet();
     confirmSheet('Replace everything on this device with the backup?','Import',()=>{S=norm(d);save();render();toast('Backup imported');});}catch(e){toast('That file is not a GYST backup');}};r.readAsText(file);};});}
+
+/* ========== reminders (best effort inside a web app) ========== */
+const isAndroid=/Android/i.test(navigator.userAgent);
+let notifTimers=[];
+async function notifPermission(){if(!('Notification' in window))return false;if(Notification.permission==='granted')return true;if(Notification.permission==='denied')return false;
+  try{return (await Notification.requestPermission())==='granted';}catch(e){return false;}}
+async function getNotified(){try{return (await idbGet('notified'))||{};}catch(e){return {};}}
+async function fireReminder(t){const opts={body:(t.description||'').split('\n')[0].slice(0,120),tag:'gyst-'+t.id,icon:'./icons/icon-192.png',badge:'./icons/icon-192.png',data:{url:'#/tasks/'+t.id}};
+  try{const reg=navigator.serviceWorker?await navigator.serviceWorker.ready:null;if(reg&&reg.showNotification)await reg.showNotification(t.title,opts);else new Notification(t.title,opts);}catch(e){}
+  const n=await getNotified();n[t.id]=t.reminder;idbSet('notified',n).catch(()=>{});}
+async function scheduleReminders(){notifTimers.forEach(clearTimeout);notifTimers=[];
+  if(!('Notification' in window)||Notification.permission!=='granted')return;
+  const n=await getNotified(),now=Date.now();
+  for(const t of S.tasks){if(!t.reminder||taskDoneOn(t)||n[t.id]===t.reminder)continue;const at=new Date(t.reminder).getTime();if(isNaN(at))continue;
+    const delay=at-now;if(delay<=0)fireReminder(t);else if(delay<24*3600e3)notifTimers.push(setTimeout(()=>fireReminder(t),delay));}}
+function calIntent(t){const s=new Date(t.reminder).getTime(),e=s+30*60000;const desc=(t.description||'').slice(0,200);
+  return `intent:#Intent;action=android.intent.action.INSERT;type=vnd.android.cursor.item/event;S.title=${encodeURIComponent(t.title)};S.description=${encodeURIComponent(desc)};l.beginTime=${s};l.endTime=${e};end`;}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)scheduleReminders();});
 
 /* biometrics via WebAuthn platform authenticator (fingerprint / face / device lock) */
 let bioSupported=false;
@@ -651,7 +705,7 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden&&S.settings
 /* ========== router ========== */
 function render(){const h=location.hash||'#/today';const p=h.slice(2).split('/').filter(Boolean);const sec=p[0]||'today';
   setNav(sec);
-  if(sec==='today')vToday();
+  if(sec==='today')vToday(p[1]);
   else if(sec==='notes')vNotes(p[1]);
   else if(sec==='tasks')p[1]?vTask(p[1]):vTasks();
   else if(sec==='habits')p[1]?vHabit(p[1]):vHabits();
@@ -659,8 +713,9 @@ function render(){const h=location.hash||'#/today';const p=h.slice(2).split('/')
   else{location.hash='#/today';return;}
   document.title=sec==='today'?'GYST':`GYST · ${sec[0].toUpperCase()+sec.slice(1)}`;}
 window.addEventListener('hashchange',()=>{closeSheet();app.scrollTop=0;lastY=0;navShow(true);render();});
-(async()=>{await loadState();render();lock();
-  if('serviceWorker' in navigator){try{navigator.serviceWorker.register('./sw.js');}catch(e){}}})();
+(async()=>{await loadState();render();lock();scheduleReminders();
+  if('serviceWorker' in navigator){try{await navigator.serviceWorker.register('./sw.js');const reg=await navigator.serviceWorker.ready;
+    if('periodicSync' in reg){try{const st=await navigator.permissions.query({name:'periodic-background-sync'});if(st.state==='granted')await reg.periodicSync.register('gyst-reminders',{minInterval:60*60*1000});}catch(e){}}}catch(e){}}})();
 
 </script>
 </body>
